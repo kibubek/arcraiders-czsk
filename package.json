@@ -9,6 +9,7 @@
     "register": "node src/register-commands.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.605.0",
     "discord.js": "^14.15.3",
     "dotenv": "^16.4.5",
     "sequelize": "^6.37.3",

@@ -23,6 +23,10 @@ class RoleRequestService {
     this.roleCleanupAllowedUserIds = new Set(["240911065255378944", "595336101678546945"]);
   }
 
+  sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   chunk(array, size) {
     const chunks = [];
     for (let i = 0; i < array.length; i += size) {
@@ -45,13 +49,19 @@ class RoleRequestService {
     }
 
     for (const chunk of this.chunk(missing, 90)) {
-      const batch = await guild.members
-        .fetch({ user: chunk })
-        .catch((error) => {
-          console.warn("Failed to fetch member chunk by id", { ids: chunk, error });
+      const batch = await guild.members.fetch({ user: chunk }).catch(async (error) => {
+        if (error?.data?.retry_after) {
+          const waitMs = Math.ceil(error.data.retry_after * 1000) + 500;
+          console.warn("role-reset: rate limited on fetch by ids, retrying", { waitMs, ids: chunk });
+          await this.sleep(waitMs);
           return null;
-        });
+        }
+        console.warn("Failed to fetch member chunk by id", { ids: chunk, error });
+        return null;
+      });
       batch?.forEach((member) => resolved.set(member.id, member));
+      // Gentle throttle between batches
+      await this.sleep(250);
     }
 
     return resolved;
@@ -69,13 +79,18 @@ class RoleRequestService {
     // Fetch in chunks to avoid gateway rate limits.
     let after = undefined;
     let fetched = 0;
+    const limit = 500;
     while (true) {
-      const batch = await guild.members
-        .fetch({ limit: 1000, after })
-        .catch((error) => {
-          console.warn("role-reset: Failed to fetch member chunk", { after, error });
+      const batch = await guild.members.fetch({ limit, after }).catch(async (error) => {
+        if (error?.data?.retry_after) {
+          const waitMs = Math.ceil(error.data.retry_after * 1000) + 500;
+          console.warn("role-reset: rate limited on member fetch, retrying", { after, waitMs });
+          await this.sleep(waitMs);
           return null;
-        });
+        }
+        console.warn("role-reset: Failed to fetch member chunk", { after, error });
+        return null;
+      });
       if (!batch || batch.size === 0) break;
       fetched += batch.size;
       batch.forEach((member) => {
@@ -83,8 +98,10 @@ class RoleRequestService {
           targets.set(member.id, member);
         }
       });
-      if (batch.size < 1000) break;
+      if (batch.size < limit) break;
       after = batch.last().id;
+      // Light throttle between requests
+      await this.sleep(400);
     }
 
     console.log("role-reset: collected members with roles", {

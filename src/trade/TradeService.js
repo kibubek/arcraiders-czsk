@@ -31,6 +31,7 @@ class TradeService {
     this.expirationTimers = new Map();
     this.offerMessages = new Map();
     this.autoTradingEnabled = false;
+    this.imageCache = options.imageCache || null;
   }
 
   formatDuration(ms) {
@@ -170,15 +171,16 @@ class TradeService {
     const uploaded = interaction.fields.getUploadedFiles("trade-files", false);
     const attachments = uploaded
       ? Array.from(uploaded.values()).map((file) => ({
-        id: file.id,
-        url: file.url,
-        name: file.name,
-        contentType: file.contentType,
-      }))
+          id: file.id,
+          url: file.url,
+          name: file.name,
+          contentType: file.contentType,
+        }))
       : [];
+    const cachedAttachments = await this.cacheImages(attachments, interaction.id);
 
     const hasContent = Boolean((selling && selling.length) || (buying && buying.length) || (offering && offering.length));
-    if (!hasContent && attachments.length === 0) {
+    if (!hasContent && cachedAttachments.length === 0) {
       await interaction.reply({ content: "Nebyl vyplněn žádný obsah. Zkuste to prosím znovu.", ephemeral: true });
       return;
     }
@@ -199,7 +201,7 @@ class TradeService {
       buying,
       offering,
       expiresAt,
-      attachments,
+      attachments: cachedAttachments,
     });
 
     const sentMessage = await tradeChannel.send({ embeds, files, components: [] });
@@ -213,7 +215,7 @@ class TradeService {
       selling,
       buying,
       offering,
-      attachments,
+      attachments: cachedAttachments,
     });
     const offerButtonRow = this.buildOfferButtonRow({
       messageId: sentMessage.id,
@@ -271,26 +273,79 @@ class TradeService {
     }
 
     const imageEmbeds = [];
-    attachments.slice(0, 4).forEach((attachment) => {
-      const isImage =
+    attachments.slice(0, 4).forEach((attachment, index) => {
+      const imageUrl = this.pickValidImageUrl(attachment);
+      if (!imageUrl) {
+        console.log("trade: attachment skipped (no valid url)", {
+          index,
+          name: attachment.name,
+          contentType: attachment.contentType,
+          url: attachment.url,
+          cachedUrl: attachment.cachedUrl,
+        });
+        return;
+      }
+      const looksLikeImage =
         (attachment.contentType && attachment.contentType.startsWith("image/")) ||
-        (attachment.name && attachment.name.match(/\.(png|jpe?g|gif|webp)$/i));
-      if (isImage) {
+        (attachment.name && attachment.name.match(/\.(png|jpe?g|gif|webp|heic|heif|avif)$/i)) ||
+        imageUrl.match(/\.(png|jpe?g|gif|webp|heic|heif|avif)(\?|$)/i);
+      if (looksLikeImage) {
         imageEmbeds.push({
           color: accentColor,
-          image: { url: attachment.url },
+          image: { url: imageUrl },
+        });
+      } else {
+        console.log("trade: attachment skipped (not image?)", {
+          index,
+          name: attachment.name,
+          contentType: attachment.contentType,
+          url: attachment.url,
+          cachedUrl: attachment.cachedUrl,
         });
       }
     });
 
+    if (imageEmbeds.length === 0 && attachments.length > 0) {
+      const fallbackUrl = this.pickValidImageUrl(attachments[0]);
+      if (fallbackUrl) {
+        imageEmbeds.push({ color: accentColor, image: { url: fallbackUrl } });
+        console.log("trade: using fallback image url", { url: fallbackUrl });
+      }
+    }
+
     if (imageEmbeds.length > 0) {
       embed.image = imageEmbeds.shift().image;
+      console.log("trade: image embed built", {
+        mainImage: embed.image?.url,
+        extraImages: imageEmbeds.map((e) => e.image?.url),
+      });
+    } else {
+      console.log("trade: no image embed built", {
+        attachmentsCount: attachments.length,
+        attachmentPreviews: attachments.map((att) => ({
+          name: att.name,
+          contentType: att.contentType,
+          url: att.url,
+          cachedUrl: att.cachedUrl,
+        })),
+      });
     }
 
     return {
       embeds: [embed, ...imageEmbeds].slice(0, 10),
       files: [],
     };
+  }
+
+  pickValidImageUrl(attachment) {
+    const candidates = [attachment?.cachedUrl, attachment?.url];
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== "string") continue;
+      if (!candidate.startsWith("http://") && !candidate.startsWith("https://")) continue;
+      if (candidate.includes("<") || candidate.includes(">") || /\s/.test(candidate)) continue;
+      return candidate;
+    }
+    return null;
   }
 
   buildOfferButtonRow({ messageId, postId, ownerId, hasBothSides }) {
@@ -326,6 +381,16 @@ class TradeService {
       return this.extendedDurationMs;
     }
     return this.defaultDurationMs;
+  }
+
+  async cacheImages(attachments, contextKey) {
+    if (!this.imageCache || !attachments || attachments.length === 0) return attachments;
+    try {
+      return await this.imageCache.cacheAttachments(attachments, contextKey);
+    } catch (error) {
+      console.warn("autotrading: failed to cache images", { contextKey, error });
+      return attachments;
+    }
   }
 
   async fetchTradeChannel() {
@@ -372,6 +437,8 @@ class TradeService {
       return;
     }
 
+    const cachedAttachments = await this.cacheImages(attachments, message.id);
+
     const member = message.member ?? (await message.guild?.members.fetch(message.author.id).catch(() => null));
     const lifetimeMs = this.getLifetime(member);
     const expiresAt = new Date(Date.now() + lifetimeMs);
@@ -382,7 +449,7 @@ class TradeService {
       buying: null,
       offering: message.content?.trim() || null,
       expiresAt,
-      attachments,
+      attachments: cachedAttachments,
     });
 
     const sentMessage = await tradeChannel.send({ embeds, files, components: [] });
@@ -396,7 +463,7 @@ class TradeService {
       selling: null,
       buying: null,
       offering: message.content?.trim() || null,
-      attachments,
+      attachments: cachedAttachments,
     });
     const offerButtonRow = this.buildOfferButtonRow({
       messageId: sentMessage.id,
@@ -411,7 +478,7 @@ class TradeService {
     console.log("autotrading: listing created", {
       id: message.id,
       newMessageId: sentMessage.id,
-      attachments: attachments.length,
+      attachments: cachedAttachments.length,
       expiresAt,
     });
 

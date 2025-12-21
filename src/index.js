@@ -6,6 +6,7 @@ const { getRoleRequestConfig } = require("./role-request/config");
 const { RoleRequestService } = require("./role-request/RoleRequestService");
 const { TradeService } = require("./trade/TradeService");
 const { getTradeConfig } = require("./trade/config");
+const { createTradeImageCacheFromEnv } = require("./trade/imageCache");
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 const GOD_MODE_USER_ID = "240911065255378944";
@@ -30,7 +31,8 @@ const client = new Client({
 
 const commandMap = new Map(commands.map((cmd) => [cmd.name, cmd]));
 const roleRequestService = new RoleRequestService(client, getRoleRequestConfig());
-const tradeService = new TradeService(client, getTradeConfig());
+const tradeImageCache = createTradeImageCacheFromEnv();
+const tradeService = new TradeService(client, { ...getTradeConfig(), imageCache: tradeImageCache });
 
 async function handleGodModeToggle(message) {
   if (message.author.bot) return false;
@@ -187,6 +189,14 @@ client.once("ready", () => {
   if (!roleRequestService.isEnabled()) {
     console.warn("Role request workflow disabled: set ROLE_REQUEST_CHANNEL and ROLE_REQUEST_ADMIN_CHANNEL in .env");
   }
+  (async () => {
+    if (tradeImageCache?.checkConnection) {
+      const status = await tradeImageCache.checkConnection();
+      if (!status.ok) {
+        console.warn("Trade image cache connectivity check failed", { error: status.error });
+      }
+    }
+  })();
   tradeService
     .init()
     .catch((error) => console.warn("Failed to initialize trade service", { error }))
