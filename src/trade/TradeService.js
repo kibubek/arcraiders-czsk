@@ -90,6 +90,11 @@ class TradeService {
       return true;
     }
 
+    if (interaction.isButton() && interaction.customId.startsWith("tr:accept-direct:")) {
+      await this.handleDirectAccept(interaction);
+      return true;
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith("tr:edit:")) {
       await this.handleEditListing(interaction);
       return true;
@@ -147,7 +152,7 @@ class TradeService {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("offering")
-          .setLabel("Nabízím")
+          .setLabel("Zpráva do Inzerátu")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(900)
@@ -210,7 +215,12 @@ class TradeService {
       offering,
       attachments,
     });
-    const offerButtonRow = this.buildOfferButtonRow({ messageId: sentMessage.id, postId: post.id, ownerId: interaction.user.id });
+    const offerButtonRow = this.buildOfferButtonRow({
+      messageId: sentMessage.id,
+      postId: post.id,
+      ownerId: interaction.user.id,
+      hasBothSides: Boolean(selling && buying),
+    });
     await sentMessage.edit({ components: [offerButtonRow] });
     await this.pinIfEligible(sentMessage, member);
 
@@ -257,7 +267,7 @@ class TradeService {
       embed.fields.push({ name: "Kupuji", value: buying, inline: false });
     }
     if (offering) {
-      embed.fields.push({ name: "Nabízím", value: offering, inline: false });
+      embed.fields.push({ name: "Zpráva do Inzerátu", value: offering, inline: false });
     }
 
     const imageEmbeds = [];
@@ -283,21 +293,32 @@ class TradeService {
     };
   }
 
-  buildOfferButtonRow({ messageId, postId, ownerId }) {
-    return new ActionRowBuilder().addComponents(
+  buildOfferButtonRow({ messageId, postId, ownerId, hasBothSides }) {
+    const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`trade/offer/start/${messageId}`)
         .setLabel("Protinabídka")
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId(`tr:edit:${postId}`)
-        .setLabel("Upravit inzerát")
-        .setStyle(ButtonStyle.Secondary),
+        .setStyle(ButtonStyle.Primary)
+    );
+
+    if (hasBothSides) {
+      row.addComponents(
+        new ButtonBuilder()
+          .setCustomId(`tr:accept-direct:${postId}:${ownerId}`)
+          .setLabel("Přijmout")
+          .setStyle(ButtonStyle.Success)
+      );
+    }
+
+    row.addComponents(
+      new ButtonBuilder().setCustomId(`tr:edit:${postId}`).setLabel("Upravit inzerát").setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
         .setCustomId(`tr:del:${postId}:${ownerId}`)
         .setLabel("Smazat inzerát")
         .setStyle(ButtonStyle.Danger)
     );
+
+    return row;
   }
 
   getLifetime(member) {
@@ -381,6 +402,7 @@ class TradeService {
       messageId: sentMessage.id,
       postId: post.id,
       ownerId: message.author.id,
+      hasBothSides: false,
     });
     await sentMessage.edit({ components: [offerButtonRow] });
     await this.pinIfEligible(sentMessage, member);
@@ -562,7 +584,7 @@ class TradeService {
       new ActionRowBuilder().addComponents(
         new TextInputBuilder()
           .setCustomId("offering")
-          .setLabel("Nabízím")
+          .setLabel("Zpráva do Inzerátu")
           .setStyle(TextInputStyle.Paragraph)
           .setRequired(false)
           .setMaxLength(900)
@@ -615,11 +637,54 @@ class TradeService {
     });
 
     if (message) {
-      const offerButtonRow = this.buildOfferButtonRow({ messageId: post.messageId, postId: post.id, ownerId: post.userId });
+      const hasBothSides = Boolean(selling && buying);
+      const offerButtonRow = this.buildOfferButtonRow({
+        messageId: post.messageId,
+        postId: post.id,
+        ownerId: post.userId,
+        hasBothSides,
+      });
       await message.edit({ embeds, files, components: [offerButtonRow] }).catch(() => null);
     }
 
     await interaction.reply({ content: "Inzerát byl upraven.", ephemeral: true });
+  }
+
+  async handleDirectAccept(interaction) {
+    const [, , postId, ownerId] = interaction.customId.split(":");
+    const post = await TradePost.findOne({ where: { id: postId } });
+    if (!post) {
+      await interaction.reply({ content: "Inzerát už není aktivní.", ephemeral: true });
+      return;
+    }
+    if (interaction.user.id === ownerId) {
+      await interaction.reply({ content: "Toto tlačítko je pro zájemce, ne pro autora.", ephemeral: true });
+      return;
+    }
+
+    const listingUrl = `https://discord.com/channels/${post.guildId}/${post.channelId}/${post.messageId}`;
+    const embed = {
+      title: "Někdo přijal tvůj inzerát",
+      description: `${interaction.user} přijal nabídku. Kontaktuj ho a domluvte se.`,
+      color: accentColor,
+      fields: [{ name: "Inzerát", value: `[Odkaz na inzerát](${listingUrl})`, inline: false }],
+      footer: { text: footerText },
+    };
+
+    const channel = await this.client.channels.fetch(post.channelId).catch(() => null);
+    const message = channel?.isTextBased() ? await channel.messages.fetch(post.messageId).catch(() => null) : null;
+
+    const ownerUser = await this.client.users.fetch(ownerId).catch(() => null);
+    if (ownerUser) {
+      await ownerUser.send({ embeds: [embed] }).catch(() => null);
+    }
+
+    if (message) {
+      await message.edit({ embeds: [embed], components: [] }).catch(() => null);
+    }
+
+    await TradePost.destroy({ where: { id: post.id } });
+    await interaction.reply({ content: "Autor inzerátu byl informován v DM.", ephemeral: true });
   }
 
   async handleOfferModalSubmit(interaction) {

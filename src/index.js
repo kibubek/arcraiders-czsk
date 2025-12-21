@@ -157,15 +157,26 @@ async function registerSlashCommands() {
 client.once("ready", () => {
   console.log(`Logged in as ${client.user.tag}`);
   try {
-    client.user.setPresence({
-      activities: [
-        {
-          name: "Chilluju v Speranze",
-          type: ActivityType.Playing,
-        },
-      ],
-      status: "online",
-    });
+    const activities = [
+      "Krmí Scrappyho.",
+      "Prochází Market.",
+      "Jede na Povrch.",
+      "Připravuje Gear.",
+      "Prozkoumává povrch.",
+      "Opravuje Dam.",
+      "Kouká na Spaceport.",
+      "Užívá si BlueGate.",
+      "Běhá ve Stelle.",
+    ];
+    const setRandomPresence = () => {
+      const next = activities[Math.floor(Math.random() * activities.length)];
+      client.user.setPresence({
+        activities: [{ name: next, type: ActivityType.Playing }],
+        status: "online",
+      });
+    };
+    setRandomPresence();
+    setInterval(setRandomPresence, 5 * 60 * 1000);
   } catch (error) {
     console.warn("Failed to set bot presence", { error });
   }
