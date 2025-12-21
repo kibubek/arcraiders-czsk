@@ -67,24 +67,24 @@ class RoleRequestService {
     return resolved;
   }
 
-  async collectMembersWithRoles(guild, roleIdSet, options = {}) {
-    const { onProgress } = options;
-    const targets = new Map();
-    let lastProgress = 0;
-    const memberCount = guild?.memberCount ?? null;
-    let lastId = null;
-
-    // Seed from cached role members to avoid unnecessary fetches.
-    for (const roleId of roleIdSet) {
-      const role = guild.roles.cache.get(roleId) || (await guild.roles.fetch(roleId).catch(() => null));
-      role?.members?.forEach((member) => targets.set(member.id, member));
+  async fetchAllMembersSafe(guild, { onProgress } = {}) {
+    // First try full fetch (fastest for ~2k members)
+    try {
+      const all = await guild.members.fetch();
+      if (onProgress) onProgress({ checked: all.size });
+      return all;
+    } catch (error) {
+      console.warn("role-reset: full member fetch failed, falling back to paging", { error });
     }
 
-    // Fetch in chunks to avoid gateway rate limits.
+    const members = new Map();
     let after = undefined;
-    let fetched = 0;
+    let lastId = null;
     const limit = 1000;
+    const memberCount = guild?.memberCount ?? null;
     let consecutiveErrors = 0;
+    let lastProgress = 0;
+
     while (true) {
       const batch = await guild.members.fetch({ limit, after }).catch(async (error) => {
         if (error?.data?.retry_after) {
@@ -96,10 +96,13 @@ class RoleRequestService {
         console.warn("role-reset: Failed to fetch member chunk", { after, error });
         return null;
       });
+
       if (!batch) {
         consecutiveErrors += 1;
         if (consecutiveErrors >= 3) {
-          console.warn("role-reset: stopping member fetch after consecutive errors", { fetched, targetCount: targets.size });
+          console.warn("role-reset: stopping member fetch after consecutive errors", {
+            fetched: members.size,
+          });
           break;
         }
         await this.sleep(500);
@@ -109,37 +112,41 @@ class RoleRequestService {
       consecutiveErrors = 0;
       if (batch.size === 0) break;
 
-      fetched += batch.size;
       batch.forEach((member) => {
-        if (member.roles.cache.some((r) => roleIdSet.has(r.id))) {
-          targets.set(member.id, member);
-        }
+        members.set(member.id, member);
       });
+
       const batchLastId = batch.last()?.id;
       if (batch.size < limit || !batchLastId || batchLastId === lastId) break;
       lastId = batchLastId;
       after = batchLastId;
-      if (memberCount && fetched >= memberCount + 500) {
-        console.warn("role-reset: stopping member fetch because fetched exceeds reported memberCount", {
-          fetched,
-          memberCount,
-        });
-        break;
-      }
-      // Light throttle between requests
-      await this.sleep(300);
 
-      const now = Date.now();
-      if (onProgress && now - lastProgress > 2000) {
-        lastProgress = now;
-        onProgress({ fetched, targetCount: targets.size });
+      if (memberCount && members.size >= memberCount) break;
+      if (onProgress && members.size - lastProgress >= 500) {
+        lastProgress = members.size;
+        onProgress({ checked: members.size });
       }
+      await this.sleep(250);
     }
+
+    if (onProgress) onProgress({ checked: members.size });
+    return members;
+  }
+
+  async collectMembersWithRoles(guild, roleIdSet, options = {}) {
+    const targets = new Map();
+    const allMembers = await this.fetchAllMembersSafe(guild, { onProgress: options.onProgress });
+
+    allMembers.forEach((member) => {
+      if (member.roles.cache.some((r) => roleIdSet.has(r.id))) {
+        targets.set(member.id, member);
+      }
+    });
 
     console.log("role-reset: collected members with roles", {
       roleCount: roleIdSet.size,
       targetCount: targets.size,
-      fetchedMembers: fetched,
+      checkedMembers: allMembers.size,
     });
 
     return targets;
@@ -386,9 +393,9 @@ class RoleRequestService {
     });
 
     const targets = await this.collectMembersWithRoles(interaction.guild, roleIdSet, {
-      onProgress: ({ fetched, targetCount }) =>
+      onProgress: ({ checked }) =>
         interaction.editReply({
-          content: `Počítám odhad... zkontrolováno ${fetched}+ členů, nalezeno ${targetCount} s vybranými rolemi.`,
+          content: `Počítám odhad... zkontrolováno ${checked}+ členů.`,
         }),
     });
     const estimatedCount = targets.size;
