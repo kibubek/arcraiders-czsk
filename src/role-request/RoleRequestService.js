@@ -71,10 +71,7 @@ class RoleRequestService {
     );
 
     const denyRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(buildDenyCustomId(message, adminMessage.id))
-        .setEmoji("<a:check1:1451917747540852859>")
-        .setStyle(ButtonStyle.Danger)
+      new ButtonBuilder().setCustomId(buildDenyCustomId(message, adminMessage.id)).setEmoji("❌").setStyle(ButtonStyle.Danger)
     );
 
     await adminMessage.edit({ components: [selectRow, denyRow] }).catch((error) => {
@@ -142,7 +139,7 @@ class RoleRequestService {
 
       const originalMessage = await this.fetchOriginalMessage(channelId, messageId);
       if (originalMessage) {
-        await originalMessage.react("\u2705").catch(() => null);
+        await originalMessage.react("<a:check1:1451917747540852859>").catch(() => null);
       }
 
       await this.updateAdminOutcomeEmbed(adminMessageId, {
@@ -191,7 +188,7 @@ class RoleRequestService {
     const originalMessage = await this.fetchOriginalMessage(channelId, messageId);
     const member = await interaction.guild.members.fetch(userId).catch(() => null);
     if (originalMessage) {
-      await originalMessage.react("<a:check1:1451917747540852859>").catch(() => null);
+      await originalMessage.react("\u274c").catch(() => null);
     }
 
     if (member) {

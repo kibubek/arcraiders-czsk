@@ -35,7 +35,7 @@ client.once("ready", () => {
     client.user.setPresence({
       activities: [
         {
-          name: "<:arcz:1434879854641152020>",
+          name: "Chilluju v Speranze",
           type: ActivityType.Playing,
         },
       ],
