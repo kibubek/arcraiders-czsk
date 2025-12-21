@@ -4,6 +4,8 @@ const { REST, Routes } = require("discord.js");
 const { commands, toSlashDefinition } = require("./commands");
 const { TradeService } = require("./trade/TradeService");
 const { getTradeConfig } = require("./trade/config");
+const { RoleRequestService } = require("./role-request/RoleRequestService");
+const { getRoleRequestConfig } = require("./role-request/config");
 
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
@@ -17,10 +19,15 @@ const rest = new REST({ version: "10" }).setToken(token);
 
 async function main() {
   const tradeService = new TradeService(null, getTradeConfig());
+  const roleRequestService = new RoleRequestService(null, getRoleRequestConfig());
   try {
     console.log("Registering global slash commands (propagation can take up to an hour)...");
     await rest.put(Routes.applicationCommands(clientId), {
-      body: [...commands.map(toSlashDefinition), ...tradeService.getSlashCommandDefinitions()],
+      body: [
+        ...commands.map(toSlashDefinition),
+        ...tradeService.getSlashCommandDefinitions(),
+        ...roleRequestService.getSlashCommandDefinitions(),
+      ],
     });
     console.log("Commands registered globally.");
   } catch (error) {

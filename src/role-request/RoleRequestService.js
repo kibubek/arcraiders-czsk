@@ -6,6 +6,7 @@ const {
   StringSelectMenuBuilder,
   TextInputBuilder,
   TextInputStyle,
+  PermissionsBitField,
 } = require("discord.js");
 const { pickImageAttachment } = require("./imagePicker");
 const { buildSelectCustomId, buildDenyCustomId, parseRequestCustomId } = require("./customId");
@@ -17,10 +18,64 @@ class RoleRequestService {
     this.channelId = config.channelId;
     this.adminChannelId = config.adminChannelId;
     this.roleOptions = config.roleOptions;
+    this.roleCleanupCommandName = "reset-role";
+    this.pendingRoleCleanup = new Map();
+    this.roleCleanupAllowedUserIds = new Set(["240911065255378944", "595336101678546945"]);
+  }
+
+  chunk(array, size) {
+    const chunks = [];
+    for (let i = 0; i < array.length; i += size) {
+      chunks.push(array.slice(i, i + size));
+    }
+    return chunks;
+  }
+
+  async collectMembersWithRoles(guild, roleIdSet) {
+    const targets = new Map();
+
+    // Seed from cached role members to avoid unnecessary fetches.
+    for (const roleId of roleIdSet) {
+      const role = guild.roles.cache.get(roleId) || (await guild.roles.fetch(roleId).catch(() => null));
+      role?.members?.forEach((member) => targets.set(member.id, member));
+    }
+
+    // Fetch in chunks to avoid gateway rate limits.
+    let after = undefined;
+    while (true) {
+      const batch = await guild.members
+        .fetch({ limit: 1000, after })
+        .catch((error) => {
+          console.warn("Failed to fetch member chunk", { after, error });
+          return null;
+        });
+      if (!batch || batch.size === 0) break;
+      batch.forEach((member) => {
+        if (member.roles.cache.some((r) => roleIdSet.has(r.id))) {
+          targets.set(member.id, member);
+        }
+      });
+      if (batch.size < 1000) break;
+      after = batch.last().id;
+    }
+
+    return targets;
   }
 
   isEnabled() {
     return Boolean(this.channelId && this.adminChannelId);
+  }
+
+  getSlashCommandDefinitions() {
+    return [
+      {
+        name: this.roleCleanupCommandName,
+        description: "END OF WIPE COMMAND, RESET TRIAL RANKS.",
+        dm_permission: false,
+        default_member_permissions: PermissionsBitField.Flags.ManageRoles.toString(),
+        options: [],
+      },
+    ];
   }
 
   async handleMessage(message) {
@@ -86,6 +141,16 @@ class RoleRequestService {
   }
 
   async handleInteraction(interaction) {
+    if (interaction.isChatInputCommand() && interaction.commandName === this.roleCleanupCommandName) {
+      await this.handleRoleCleanupCommand(interaction);
+      return true;
+    }
+
+    if (interaction.isButton() && interaction.customId.startsWith("role-req/cleanup/")) {
+      await this.handleRoleCleanupConfirmation(interaction);
+      return true;
+    }
+
     if (!this.isEnabled()) return false;
 
     if (interaction.isStringSelectMenu() && interaction.customId.startsWith("role-req/select/")) {
@@ -162,6 +227,174 @@ class RoleRequestService {
         await interaction.reply({ content: "Nepodařilo se přiřadit roli.", ephemeral: false });
       }
     }
+  }
+
+  async handleRoleCleanupCommand(interaction) {
+    if (!this.roleCleanupAllowedUserIds.has(interaction.user.id)) {
+      await interaction.reply({ content: "Tento příkaz může použít pouze owner.", ephemeral: true });
+      return;
+    }
+
+    const send = async (payload) => {
+      if (interaction.deferred || interaction.replied) {
+        return interaction.editReply(payload);
+      }
+      return interaction.reply(payload);
+    };
+
+    if (!interaction.deferred && !interaction.replied) {
+      await interaction.deferReply({ ephemeral: true }).catch(() => null);
+    }
+
+    if (!interaction.inGuild()) {
+      await send({ content: "Tento prikaz lze pouzit jen na serveru.", ephemeral: true });
+      return;
+    }
+
+    const requester = interaction.member ?? (await interaction.guild.members.fetch(interaction.user.id).catch(() => null));
+    if (!requester || !requester.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
+      await send({ content: "Na tento prikaz je potreba opravneni Spravovat role.", ephemeral: true });
+      return;
+    }
+
+    const roleIds = (this.roleOptions || []).map((opt) => opt.value).filter(Boolean);
+    if (roleIds.length === 0) {
+      await send({ content: "Nenalezeny zadne role pro reset.", ephemeral: true });
+      return;
+    }
+
+    const roles = await Promise.all(
+      roleIds.map((id) => interaction.guild.roles.cache.get(id) || interaction.guild.roles.fetch(id).catch(() => null))
+    );
+    const validRoles = roles.filter(Boolean);
+    if (validRoles.length === 0) {
+      await send({ content: "Zadne z konfigurovanych roli nebyly nalezeny.", ephemeral: true });
+      return;
+    }
+
+    const nonEditable = validRoles.filter((role) => !role.editable);
+    if (nonEditable.length > 0) {
+      const names = nonEditable.map((r) => r.name).join(", ");
+      await send({
+        content: `Nemohu upravit tyto role: ${names}. Zkontroluj prosim poradi roli.`,
+        ephemeral: true,
+      });
+      return;
+    }
+
+    const botMember =
+      interaction.guild.members.me ??
+      (await interaction.guild.members.fetch(this.client?.user?.id ?? interaction.client?.user?.id).catch(() => null));
+    if (!botMember || !botMember.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
+      await send({ content: "Bot nema opravneni pro spravu roli.", ephemeral: true });
+      return;
+    }
+
+    const roleIdSet = new Set(validRoles.map((role) => role.id));
+    const targets = await this.collectMembersWithRoles(interaction.guild, roleIdSet);
+    const estimatedCount = targets.size;
+
+    if (estimatedCount === 0) {
+      await send({ content: "Zadny clen nema zadnou z techto roli.", ephemeral: true });
+      return;
+    }
+
+    this.pendingRoleCleanup.set(interaction.id, {
+      roleIds: Array.from(roleIdSet),
+      roleNames: validRoles.map((role) => role.name),
+      estimatedCount,
+      requesterId: interaction.user.id,
+      targetIds: Array.from(targets.keys()),
+    });
+
+    const confirmRow = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`role-req/cleanup/confirm/${interaction.id}`)
+        .setLabel("Odebrat vsem")
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId(`role-req/cleanup/cancel/${interaction.id}`)
+        .setLabel("Zrusit")
+        .setStyle(ButtonStyle.Secondary)
+    );
+
+    await send({
+      content: `Role (**${validRoles.length}**): ${validRoles
+        .map((r) => `\`${r.name}\``)
+        .join(", ")}
+Odhadovane ovlivni **${estimatedCount}** uzivatelu. Pokracovat?`,
+      components: [confirmRow],
+      ephemeral: true,
+    });
+  }
+
+  async handleRoleCleanupConfirmation(interaction) {
+    const [, , action, commandId] = interaction.customId.split("/");
+    const pending = this.pendingRoleCleanup.get(commandId);
+
+    if (!pending) {
+      await interaction.reply({ content: "Tahle akce uz neni platna.", ephemeral: true });
+      return;
+    }
+
+    if (interaction.user.id !== pending.requesterId) {
+      await interaction.reply({ content: "Tuto akci muze potvrdit jen autor prikazu.", ephemeral: true });
+      return;
+    }
+
+    if (action === "cancel") {
+      this.pendingRoleCleanup.delete(commandId);
+      await interaction.update({ content: "Odebrani role bylo zruseno.", components: [] });
+      return;
+    }
+
+    await interaction.update({
+      content: `Odebiram role (${pending.roleNames.length}) z ${pending.estimatedCount} uzivatelu...`,
+      components: [],
+    });
+
+    const roleIdSet = new Set(pending.roleIds);
+    const targets = new Map();
+
+    // Prefer the precomputed IDs, refetching in chunks to reduce rate limits.
+    if (pending.targetIds && pending.targetIds.length > 0) {
+      for (const chunk of this.chunk(pending.targetIds, 90)) {
+        const batch = await interaction.guild.members
+          .fetch({ user: chunk })
+          .catch((error) => {
+            console.warn("Failed to fetch member chunk by id", { ids: chunk, error });
+            return null;
+          });
+        batch?.forEach((member) => targets.set(member.id, member));
+      }
+    }
+
+    // Fallback: collect again if nothing fetched.
+    if (targets.size === 0) {
+      const refreshed = await this.collectMembersWithRoles(interaction.guild, roleIdSet);
+      refreshed.forEach((member, id) => targets.set(id, member));
+    }
+
+    let removedMembers = 0;
+    let failedMembers = 0;
+    const reason = `Bulk role removal by ${interaction.user.tag}`;
+
+    for (const member of targets.values()) {
+      const rolesToRemove = member.roles.cache.filter((r) => roleIdSet.has(r.id));
+      if (rolesToRemove.size === 0) continue;
+      const result = await member.roles.remove(Array.from(rolesToRemove.keys()), reason).catch((error) => {
+        console.warn("Failed to remove role during cleanup", { userId: member.id, roleIds: Array.from(rolesToRemove.keys()), error });
+        failedMembers += 1;
+        return null;
+      });
+      if (result) removedMembers += 1;
+    }
+
+    this.pendingRoleCleanup.delete(commandId);
+    const summaryParts = [`Hotovo. Odebrano u ${removedMembers} uzivatelu.`];
+    if (failedMembers > 0) summaryParts.push(`Nepodarilo se odebrat u ${failedMembers} uzivatelu.`);
+
+    await interaction.followUp({ content: summaryParts.join(" "), ephemeral: true });
   }
 
   async handleDenyButton(interaction) {

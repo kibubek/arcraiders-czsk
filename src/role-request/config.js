@@ -1,4 +1,4 @@
-const roleOptions = [
+const defaultRoleOptions = [
   { label: "Cantina Legend", value: "1434950617360764928" },
   { label: "Hotshot", value: "1434950623983308880" },
   { label: "Daredevil III", value: "1434950630698647725" },
@@ -14,6 +14,47 @@ const roleOptions = [
   { label: "Rookie II", value: "1434950765444730880" },
   { label: "Rookie I", value: "1434950772814254131" },
 ];
+
+function parseRoleOptionsFromEnv(raw) {
+  if (!raw) return { options: null, error: null };
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return { options: null, error: new Error("ROLE_REQUEST_OPTIONS must be an array") };
+    const options = parsed
+      .filter((item) => item && typeof item.label === "string" && typeof item.value === "string")
+      .map((item) => ({ label: item.label, value: item.value }));
+    return { options, error: null };
+  } catch (error) {
+    return { options: null, error };
+  }
+}
+
+function parseIndexedRoleOptionsFromEnv(env) {
+  const entries = Object.entries(env)
+    .filter(([key, value]) => /^ROLE_REQUEST_OPTION_\d+$/.test(key) && value)
+    .map(([key, value]) => {
+      const index = Number(key.split("_").pop());
+      return { index, value: value.trim() };
+    })
+    .filter(({ index, value }) => Number.isFinite(index) && value.length > 0)
+    .sort((a, b) => a.index - b.index);
+
+  if (entries.length === 0) return null;
+
+  return entries.map(({ value }, idx) => ({
+    label: defaultRoleOptions[idx]?.label ?? `Role ${idx + 1}`,
+    value,
+  }));
+}
+
+const { options: jsonRoleOptions, error: jsonParseError } = parseRoleOptionsFromEnv(process.env.ROLE_REQUEST_OPTIONS);
+const indexedRoleOptions = parseIndexedRoleOptionsFromEnv(process.env);
+
+if (!jsonRoleOptions && jsonParseError && !indexedRoleOptions) {
+  console.warn("Failed to parse ROLE_REQUEST_OPTIONS, using defaults.", { error: jsonParseError });
+}
+
+const roleOptions = jsonRoleOptions ?? indexedRoleOptions ?? defaultRoleOptions;
 
 function getRoleRequestConfig() {
   return {

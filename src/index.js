@@ -147,7 +147,11 @@ async function handleGodModeToggle(message) {
 
 async function registerSlashCommands() {
   console.log("Registering global slash commands (propagation can take up to an hour)...");
-  const slashCommands = [...commands.map(toSlashDefinition), ...tradeService.getSlashCommandDefinitions()];
+  const slashCommands = [
+    ...commands.map(toSlashDefinition),
+    ...tradeService.getSlashCommandDefinitions(),
+    ...roleRequestService.getSlashCommandDefinitions(),
+  ];
   await rest.put(Routes.applicationCommands(clientId), {
     body: slashCommands,
   });
@@ -210,6 +214,14 @@ client.on("interactionCreate", async (interaction) => {
   const handledByTrade = await tradeService.handleInteraction(interaction);
   if (handledByTrade) return;
 
+  try {
+    const handledByRoleRequest = await roleRequestService.handleInteraction(interaction);
+    if (handledByRoleRequest) return;
+  } catch (error) {
+    console.error("Failed to handle role request interaction:", error);
+    return;
+  }
+
   if (interaction.isChatInputCommand()) {
     const command = commandMap.get(interaction.commandName);
     if (!command) return;
@@ -227,13 +239,6 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
-  try {
-    const handled = await roleRequestService.handleInteraction(interaction);
-    if (handled) return;
-  } catch (error) {
-    console.error("Failed to handle role request interaction:", error);
-    return;
-  }
 });
 
 (async () => {
