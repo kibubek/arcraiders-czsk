@@ -71,6 +71,8 @@ class RoleRequestService {
     const { onProgress } = options;
     const targets = new Map();
     let lastProgress = 0;
+    const memberCount = guild?.memberCount ?? null;
+    let lastId = null;
 
     // Seed from cached role members to avoid unnecessary fetches.
     for (const roleId of roleIdSet) {
@@ -113,8 +115,17 @@ class RoleRequestService {
           targets.set(member.id, member);
         }
       });
-      if (batch.size < limit) break;
-      after = batch.last().id;
+      const batchLastId = batch.last()?.id;
+      if (batch.size < limit || !batchLastId || batchLastId === lastId) break;
+      lastId = batchLastId;
+      after = batchLastId;
+      if (memberCount && fetched >= memberCount + 500) {
+        console.warn("role-reset: stopping member fetch because fetched exceeds reported memberCount", {
+          fetched,
+          memberCount,
+        });
+        break;
+      }
       // Light throttle between requests
       await this.sleep(300);
 
