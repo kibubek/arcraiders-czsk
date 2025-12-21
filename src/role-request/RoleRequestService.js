@@ -31,6 +31,32 @@ class RoleRequestService {
     return chunks;
   }
 
+  async resolveMembersByIds(guild, ids) {
+    const resolved = new Map();
+    const missing = [];
+
+    for (const id of ids) {
+      const cached = guild.members.cache.get(id);
+      if (cached) {
+        resolved.set(id, cached);
+      } else {
+        missing.push(id);
+      }
+    }
+
+    for (const chunk of this.chunk(missing, 90)) {
+      const batch = await guild.members
+        .fetch({ user: chunk })
+        .catch((error) => {
+          console.warn("Failed to fetch member chunk by id", { ids: chunk, error });
+          return null;
+        });
+      batch?.forEach((member) => resolved.set(member.id, member));
+    }
+
+    return resolved;
+  }
+
   async collectMembersWithRoles(guild, roleIdSet) {
     const targets = new Map();
 
@@ -42,14 +68,16 @@ class RoleRequestService {
 
     // Fetch in chunks to avoid gateway rate limits.
     let after = undefined;
+    let fetched = 0;
     while (true) {
       const batch = await guild.members
         .fetch({ limit: 1000, after })
         .catch((error) => {
-          console.warn("Failed to fetch member chunk", { after, error });
+          console.warn("role-reset: Failed to fetch member chunk", { after, error });
           return null;
         });
       if (!batch || batch.size === 0) break;
+      fetched += batch.size;
       batch.forEach((member) => {
         if (member.roles.cache.some((r) => roleIdSet.has(r.id))) {
           targets.set(member.id, member);
@@ -58,6 +86,12 @@ class RoleRequestService {
       if (batch.size < 1000) break;
       after = batch.last().id;
     }
+
+    console.log("role-reset: collected members with roles", {
+      roleCount: roleIdSet.size,
+      targetCount: targets.size,
+      fetchedMembers: fetched,
+    });
 
     return targets;
   }
@@ -291,6 +325,12 @@ class RoleRequestService {
     }
 
     const roleIdSet = new Set(validRoles.map((role) => role.id));
+    console.log("role-reset: starting estimate", {
+      requestedBy: interaction.user.id,
+      guildId: interaction.guildId,
+      roleCount: roleIdSet.size,
+    });
+
     const targets = await this.collectMembersWithRoles(interaction.guild, roleIdSet);
     const estimatedCount = targets.size;
 
@@ -298,6 +338,13 @@ class RoleRequestService {
       await send({ content: "Zadny clen nema zadnou z techto roli.", ephemeral: true });
       return;
     }
+
+    console.log("role-reset: confirmation prompt", {
+      requestedBy: interaction.user.id,
+      guildId: interaction.guildId,
+      roleCount: roleIdSet.size,
+      estimatedCount,
+    });
 
     this.pendingRoleCleanup.set(interaction.id, {
       roleIds: Array.from(roleIdSet),
@@ -354,25 +401,15 @@ Odhadovane ovlivni **${estimatedCount}** uzivatelu. Pokracovat?`,
     });
 
     const roleIdSet = new Set(pending.roleIds);
-    const targets = new Map();
+    let targets = new Map();
 
-    // Prefer the precomputed IDs, refetching in chunks to reduce rate limits.
     if (pending.targetIds && pending.targetIds.length > 0) {
-      for (const chunk of this.chunk(pending.targetIds, 90)) {
-        const batch = await interaction.guild.members
-          .fetch({ user: chunk })
-          .catch((error) => {
-            console.warn("Failed to fetch member chunk by id", { ids: chunk, error });
-            return null;
-          });
-        batch?.forEach((member) => targets.set(member.id, member));
-      }
+      targets = await this.resolveMembersByIds(interaction.guild, pending.targetIds);
     }
 
-    // Fallback: collect again if nothing fetched.
+    // Fallback: collect again if nothing fetched (cache cold or members left the guild).
     if (targets.size === 0) {
-      const refreshed = await this.collectMembersWithRoles(interaction.guild, roleIdSet);
-      refreshed.forEach((member, id) => targets.set(id, member));
+      targets = await this.collectMembersWithRoles(interaction.guild, roleIdSet);
     }
 
     let removedMembers = 0;
