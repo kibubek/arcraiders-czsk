@@ -67,8 +67,11 @@ class RoleRequestService {
     return resolved;
   }
 
-  async collectMembersWithRoles(guild, roleIdSet) {
+  async collectMembersWithRoles(guild, roleIdSet, options = {}) {
+    const { onProgress, timeLimitMs = 15_000 } = options;
     const targets = new Map();
+    const started = Date.now();
+    let lastProgress = 0;
 
     // Seed from cached role members to avoid unnecessary fetches.
     for (const roleId of roleIdSet) {
@@ -102,6 +105,19 @@ class RoleRequestService {
       after = batch.last().id;
       // Light throttle between requests
       await this.sleep(400);
+
+      const now = Date.now();
+      if (onProgress && now - lastProgress > 2000) {
+        lastProgress = now;
+        onProgress({ fetched, targetCount: targets.size });
+      }
+      if (now - started > timeLimitMs) {
+        console.warn("role-reset: stopping member collection due to time limit", {
+          fetched,
+          targetCount: targets.size,
+        });
+        break;
+      }
     }
 
     console.log("role-reset: collected members with roles", {
@@ -341,6 +357,11 @@ class RoleRequestService {
       return;
     }
 
+    await send({
+      content: "Počítám odhad počtu uživatelů, může to trvat několik sekund...",
+      ephemeral: true,
+    });
+
     const roleIdSet = new Set(validRoles.map((role) => role.id));
     console.log("role-reset: starting estimate", {
       requestedBy: interaction.user.id,
@@ -348,7 +369,12 @@ class RoleRequestService {
       roleCount: roleIdSet.size,
     });
 
-    const targets = await this.collectMembersWithRoles(interaction.guild, roleIdSet);
+    const targets = await this.collectMembersWithRoles(interaction.guild, roleIdSet, {
+      onProgress: ({ fetched, targetCount }) =>
+        interaction.editReply({
+          content: `Počítám odhad... zkontrolováno ${fetched}+ členů, nalezeno ${targetCount} s vybranými rolemi.`,
+        }),
+    });
     const estimatedCount = targets.size;
 
     if (estimatedCount === 0) {
