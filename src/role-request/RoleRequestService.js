@@ -68,9 +68,8 @@ class RoleRequestService {
   }
 
   async collectMembersWithRoles(guild, roleIdSet, options = {}) {
-    const { onProgress, timeLimitMs = 15_000 } = options;
+    const { onProgress } = options;
     const targets = new Map();
-    const started = Date.now();
     let lastProgress = 0;
 
     // Seed from cached role members to avoid unnecessary fetches.
@@ -82,7 +81,8 @@ class RoleRequestService {
     // Fetch in chunks to avoid gateway rate limits.
     let after = undefined;
     let fetched = 0;
-    const limit = 500;
+    const limit = 1000;
+    let consecutiveErrors = 0;
     while (true) {
       const batch = await guild.members.fetch({ limit, after }).catch(async (error) => {
         if (error?.data?.retry_after) {
@@ -94,7 +94,19 @@ class RoleRequestService {
         console.warn("role-reset: Failed to fetch member chunk", { after, error });
         return null;
       });
-      if (!batch || batch.size === 0) break;
+      if (!batch) {
+        consecutiveErrors += 1;
+        if (consecutiveErrors >= 3) {
+          console.warn("role-reset: stopping member fetch after consecutive errors", { fetched, targetCount: targets.size });
+          break;
+        }
+        await this.sleep(500);
+        continue;
+      }
+
+      consecutiveErrors = 0;
+      if (batch.size === 0) break;
+
       fetched += batch.size;
       batch.forEach((member) => {
         if (member.roles.cache.some((r) => roleIdSet.has(r.id))) {
@@ -104,19 +116,12 @@ class RoleRequestService {
       if (batch.size < limit) break;
       after = batch.last().id;
       // Light throttle between requests
-      await this.sleep(400);
+      await this.sleep(300);
 
       const now = Date.now();
       if (onProgress && now - lastProgress > 2000) {
         lastProgress = now;
         onProgress({ fetched, targetCount: targets.size });
-      }
-      if (now - started > timeLimitMs) {
-        console.warn("role-reset: stopping member collection due to time limit", {
-          fetched,
-          targetCount: targets.size,
-        });
-        break;
       }
     }
 
