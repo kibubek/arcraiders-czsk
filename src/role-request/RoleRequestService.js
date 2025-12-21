@@ -376,6 +376,10 @@ class RoleRequestService {
         }),
     });
     const estimatedCount = targets.size;
+    let estimatedAssignments = 0;
+    for (const member of targets.values()) {
+      estimatedAssignments += member.roles.cache.filter((r) => roleIdSet.has(r.id)).size;
+    }
 
     if (estimatedCount === 0) {
       await send({ content: "Zadny clen nema zadnou z techto roli.", ephemeral: true });
@@ -393,6 +397,7 @@ class RoleRequestService {
       roleIds: Array.from(roleIdSet),
       roleNames: validRoles.map((role) => role.name),
       estimatedCount,
+      estimatedAssignments,
       requesterId: interaction.user.id,
       targetIds: Array.from(targets.keys()),
     });
@@ -412,7 +417,7 @@ class RoleRequestService {
       content: `Role (**${validRoles.length}**): ${validRoles
         .map((r) => `\`${r.name}\``)
         .join(", ")}
-Odhadovane ovlivni **${estimatedCount}** uzivatelu. Pokracovat?`,
+Odhadovane ovlivni **${estimatedCount}** uživatelů, celkem **${estimatedAssignments}** přiřazení k odebrání. Pokračovat?`,
       components: [confirmRow],
       ephemeral: true,
     });
