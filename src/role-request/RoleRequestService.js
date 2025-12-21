@@ -34,7 +34,7 @@ class RoleRequestService {
       console.log("Role request rejected (no image)", { messageId: message.id, author: message.author?.id });
       const notice = await message
         .reply({
-          content: "Tento kanal je jen pro zadosti o roli. Pripni prosim screen hry s nickem a rankem (obrazek).",
+          content: "Tento kanál je jen pro žádosti o role. Pošli prosím **jeden obrázek**, kde je vidět tvůj **rank**, **jméno** a požádej si tím o roli.",
         })
         .catch(() => null);
       if (notice) {
@@ -51,14 +51,14 @@ class RoleRequestService {
 
     const embed = {
       title: "Zadost o roli",
-      description: `Uzivatel ${message.author} poslal zadost. Vyber roli nebo ji zamitni.${image ? "" : "\n(Obrazek nebyl detekovan - otevri puvodni zpravu)"}`,
+      description: `Uživatel ${message.author} poslal žádost. Vyber roli nebo jí zamítni.${image ? "" : "\n(Obrázek nebyl nalezen, zkus se podívat na původní zprávu)"}`,
       url: message.url,
       image: image ? { url: image.url } : undefined,
-      footer: { text: `Uzivatel ID: ${message.author.id}` },
+      footer: { text: `Uživatel ID: ${message.author.id}` },
     };
 
     const adminMessage = await adminChannel.send({
-      content: `Nova zadost o roli od ${message.author.tag}`,
+      content: `Nová žádost o roli od ${message.author.tag}`,
       embeds: [embed],
       components: [],
     });
@@ -66,12 +66,15 @@ class RoleRequestService {
     const selectRow = new ActionRowBuilder().addComponents(
       new StringSelectMenuBuilder()
         .setCustomId(buildSelectCustomId(message, adminMessage.id))
-        .setPlaceholder("Vyber roli k prirazeni")
+        .setPlaceholder("Vyber roli k přiřazení")
         .addOptions(this.roleOptions)
     );
 
     const denyRow = new ActionRowBuilder().addComponents(
-      new ButtonBuilder().setCustomId(buildDenyCustomId(message, adminMessage.id)).setLabel("X").setStyle(ButtonStyle.Danger)
+      new ButtonBuilder()
+        .setCustomId(buildDenyCustomId(message, adminMessage.id))
+        .setEmoji("<a:check1:1451917747540852859>")
+        .setStyle(ButtonStyle.Danger)
     );
 
     await adminMessage.edit({ components: [selectRow, denyRow] }).catch((error) => {
@@ -113,7 +116,7 @@ class RoleRequestService {
     try {
       const role = interaction.guild.roles.cache.get(selectedRoleId);
       if (!role) {
-        await interaction.reply({ content: `Roli se nepodarilo najit (id: ${selectedRoleId}).`, ephemeral: true });
+        await interaction.reply({ content: `Roli se nepodařilo najít najit (id: ${selectedRoleId}).`, ephemeral: false });
         return;
       }
 
@@ -129,7 +132,7 @@ class RoleRequestService {
         });
       }
 
-      await member.roles.add(role, `Approved by ${interaction.user.tag} via role request`);
+      await member.roles.add(role, `Schváleno uživatele ${interaction.user.tag}`);
       console.log("Role assigned", {
         userId,
         roleId: selectedRoleId,
@@ -151,15 +154,15 @@ class RoleRequestService {
 
       await interaction.update({ components: [] });
       await interaction.followUp({
-        content: `Role "${selectedRole?.label ?? role.name}" byla prirazena uzivateli <@${userId}>.`,
+        content: `Role "${selectedRole?.label ?? role.name}" byla přiřazena uživateli <@${userId}>.`,
         ephemeral: true,
       });
     } catch (error) {
       console.error("Failed to assign role:", error);
       if (interaction.deferred || interaction.replied) {
-        await interaction.followUp({ content: "Nepodarilo se priradit roli.", ephemeral: true });
+        await interaction.followUp({ content: "Nepodařilo se přiřadit roli.", ephemeral: false });
       } else {
-        await interaction.reply({ content: "Nepodarilo se priradit roli.", ephemeral: true });
+        await interaction.reply({ content: "Nepodařilo se přiřadit roli.", ephemeral: false });
       }
     }
   }
@@ -168,11 +171,11 @@ class RoleRequestService {
     const { channelId, messageId, userId } = parseRequestCustomId(interaction.customId);
     const modal = new ModalBuilder()
       .setCustomId(`role-req/modal/${channelId}/${messageId}/${userId}/${interaction.message.id}`)
-      .setTitle("Zamitnout zadost");
+      .setTitle("Zamítnout žádost");
 
     const reasonInput = new TextInputBuilder()
       .setCustomId("deny-reason")
-      .setLabel("Duvod zamitnuti")
+      .setLabel("Důvod zamítnutí")
       .setStyle(TextInputStyle.Paragraph)
       .setRequired(true)
       .setMaxLength(500);
@@ -188,19 +191,19 @@ class RoleRequestService {
     const originalMessage = await this.fetchOriginalMessage(channelId, messageId);
     const member = await interaction.guild.members.fetch(userId).catch(() => null);
     if (originalMessage) {
-      await originalMessage.react("\u274c").catch(() => null);
+      await originalMessage.react("<a:check1:1451917747540852859>").catch(() => null);
     }
 
     if (member) {
       await member
         .send({
-          content: `Tvoje zadost o roli byla zamitnuta.\nDuvod: ${reason}\nZamitl: ${interaction.user}\nOdkaz: ${originalMessage?.url ?? "nelze nacist zpravu"}`,
+          content: `Tvoje žádost o roli byla zamítnuta.\nDůvod: ${reason}\nZamítl: ${interaction.user}\nOdkaz: ${originalMessage?.url ?? "nelze načíst zprávu"}`,
         })
         .catch((error) => console.warn("Failed to DM user about denial", { userId, error }));
     }
 
     await this.removeAdminComponents(this.adminChannelId, adminMessageId);
-    const replyPayload = { content: "Zadost byla zamitnuta.", ephemeral: true };
+    const replyPayload = { content: "Žádost byla zamitnuta.", ephemeral: true };
     if (interaction.replied || interaction.deferred) {
       await interaction.followUp(replyPayload).catch((error) =>
         console.warn("Failed to follow up deny modal response", { error })
@@ -274,7 +277,7 @@ class RoleRequestService {
 
     const updatedEmbed = {
       ...baseEmbed,
-      description: outcome.status === "approved" ? "Zadost byla schvalena." : "Zadost byla zamitnuta.",
+      description: outcome.status === "approved" ? "Žádost byla schvalena." : "Žádost byla zamítnuta.",
       fields,
     };
 

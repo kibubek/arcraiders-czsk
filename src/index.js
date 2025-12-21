@@ -1,10 +1,9 @@
 ﻿require("dotenv").config();
 
-const { Client, GatewayIntentBits, REST, Routes } = require("discord.js");
+const { Client, GatewayIntentBits, REST, Routes, ActivityType } = require("discord.js");
 const { commands, buildEmbed, toSlashDefinition } = require("./commands");
 const { getRoleRequestConfig } = require("./role-request/config");
 const { RoleRequestService } = require("./role-request/RoleRequestService");
-const { PresenceUpdateStatu, ActivityType } = require('discord.js');
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 
@@ -32,6 +31,19 @@ async function registerSlashCommands() {
 
 client.once("ready", () => {
   console.log(`Logged in as ${client.user.tag}`);
+  try {
+    client.user.setPresence({
+      activities: [
+        {
+          name: "<:arcz:1434879854641152020>",
+          type: ActivityType.Playing,
+        },
+      ],
+      status: "online",
+    });
+  } catch (error) {
+    console.warn("Failed to set bot presence", { error });
+  }
   if (!roleRequestService.isEnabled()) {
     console.warn("Role request workflow disabled: set ROLE_REQUEST_CHANNEL and ROLE_REQUEST_ADMIN_CHANNEL in .env");
   }
@@ -76,8 +88,6 @@ client.on("interactionCreate", async (interaction) => {
   try {
     await registerSlashCommands();
     await client.login(token);
-
-
   } catch (error) {
     console.error("Failed to start the bot:", error);
     process.exit(1);
