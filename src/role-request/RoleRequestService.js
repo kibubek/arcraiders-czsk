@@ -363,7 +363,7 @@ class RoleRequestService {
     };
 
     if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ ephemeral: true }).catch(() => null);
+      await interaction.deferReply().catch(() => null);
     }
 
     if (!interaction.inGuild()) {
@@ -373,13 +373,13 @@ class RoleRequestService {
 
     const requester = interaction.member ?? (await interaction.guild.members.fetch(interaction.user.id).catch(() => null));
     if (!requester || !requester.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-      await send({ content: "Na tento prikaz je potreba opravneni Spravovat role.", ephemeral: true });
+      await send({ content: "Na tento prikaz je potreba opravneni Spravovat role." });
       return;
     }
 
     const roleIds = (this.roleOptions || []).map((opt) => opt.value).filter(Boolean);
     if (roleIds.length === 0) {
-      await send({ content: "Nenalezeny zadne role pro reset.", ephemeral: true });
+      await send({ content: "Nenalezeny zadne role pro reset." });
       return;
     }
 
@@ -388,7 +388,7 @@ class RoleRequestService {
     );
     const validRoles = roles.filter(Boolean);
     if (validRoles.length === 0) {
-      await send({ content: "Zadne z konfigurovanych roli nebyly nalezeny.", ephemeral: true });
+      await send({ content: "Zadne z konfigurovanych roli nebyly nalezeny." });
       return;
     }
 
@@ -397,7 +397,6 @@ class RoleRequestService {
       const names = nonEditable.map((r) => r.name).join(", ");
       await send({
         content: `Nemohu upravit tyto role: ${names}. Zkontroluj prosim poradi roli.`,
-        ephemeral: true,
       });
       return;
     }
@@ -406,13 +405,12 @@ class RoleRequestService {
       interaction.guild.members.me ??
       (await interaction.guild.members.fetch(this.client?.user?.id ?? interaction.client?.user?.id).catch(() => null));
     if (!botMember || !botMember.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-      await send({ content: "Bot nema opravneni pro spravu roli.", ephemeral: true });
+      await send({ content: "Bot nema opravneni pro spravu roli." });
       return;
     }
 
     await send({
       content: "Počítám odhad počtu uživatelů, může to trvat několik sekund...",
-      ephemeral: true,
     });
 
     const roleIdSet = new Set(validRoles.map((role) => role.id));
@@ -432,7 +430,7 @@ class RoleRequestService {
     const estimatedAssignments = totalAssignments;
 
     if (estimatedCount === 0) {
-      await send({ content: "Zadny clen nema zadnou z techto roli.", ephemeral: true });
+      await send({ content: "Zadny clen nema zadnou z techto roli." });
       return;
     }
 
@@ -469,29 +467,28 @@ class RoleRequestService {
         .join(", ")}
 Odhadovane ovlivni **${estimatedCount}** uživatelů, celkem **${estimatedAssignments}** přiřazení k odebrání. Pokračovat?`,
       components: [confirmRow],
-      ephemeral: true,
     });
   }
 
   async handleRoleCleanupSpecificCommand(interaction) {
     if (!this.roleCleanupAllowedUserIds.has(interaction.user.id)) {
-      await interaction.reply({ content: "Tento příkaz může použít pouze owner.", ephemeral: true });
+      await interaction.reply({ content: "Tento příkaz může použít pouze owner." });
       return;
     }
 
     if (!interaction.deferred && !interaction.replied) {
-      await interaction.deferReply({ ephemeral: true }).catch(() => null);
+      await interaction.deferReply().catch(() => null);
     }
 
     const role = interaction.options.getRole("role", true);
     if (!role || !role.id) {
-      await interaction.editReply({ content: "Roli se nepodařilo najít.", ephemeral: true });
+      await interaction.editReply({ content: "Roli se nepodařilo najít." });
       return;
     }
 
     const requester = interaction.member ?? (await interaction.guild.members.fetch(interaction.user.id).catch(() => null));
     if (!requester || !requester.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-      await interaction.editReply({ content: "Na tento příkaz je potřeba oprávnění Spravovat role.", ephemeral: true });
+      await interaction.editReply({ content: "Na tento příkaz je potřeba oprávnění Spravovat role." });
       return;
     }
 
@@ -499,21 +496,30 @@ Odhadovane ovlivni **${estimatedCount}** uživatelů, celkem **${estimatedAssign
       interaction.guild.members.me ??
       (await interaction.guild.members.fetch(this.client?.user?.id ?? interaction.client?.user?.id).catch(() => null));
     if (!botMember || !botMember.permissions.has(PermissionsBitField.Flags.ManageRoles)) {
-      await interaction.editReply({ content: "Bot nemá oprávnění pro správu rolí.", ephemeral: true });
+      await interaction.editReply({ content: "Bot nemá oprávnění pro správu rolí." });
       return;
     }
 
     if (!role.editable) {
-      await interaction.editReply({ content: "Tuto roli nemohu upravit. Zkontroluj pořadí rolí.", ephemeral: true });
+      await interaction.editReply({ content: "Tuto roli nemohu upravit. Zkontroluj pořadí rolí." });
       return;
     }
 
-    const roleMembers = role.members ?? new Map();
-    const targetIds = Array.from(roleMembers.keys());
-    const estimatedCount = roleMembers.size;
+    // Fetch all members to avoid cache misses and build target list.
+    const allMembers = await this.fetchAllMembersSafe(interaction.guild, {
+      onProgress: ({ checked }) =>
+        interaction.editReply({
+          content: `Počítám... zkontrolováno ${checked}+ členů.`,
+        }),
+    });
+    const targets = [];
+    allMembers.forEach((member) => {
+      if (member.roles.cache.has(role.id)) targets.push(member.id);
+    });
+    const estimatedCount = targets.length;
 
     if (estimatedCount === 0) {
-      await interaction.editReply({ content: "Tuto roli nemá nikdo přiřazenou.", ephemeral: true });
+      await interaction.editReply({ content: "Tuto roli nemá nikdo přiřazenou." });
       return;
     }
 
@@ -524,7 +530,7 @@ Odhadovane ovlivni **${estimatedCount}** uživatelů, celkem **${estimatedAssign
       estimatedCount,
       estimatedAssignments: estimatedCount,
       requesterId: interaction.user.id,
-      targetIds,
+      targetIds: targets,
     });
 
     const confirmRow = new ActionRowBuilder().addComponents(
@@ -541,7 +547,6 @@ Odhadovane ovlivni **${estimatedCount}** uživatelů, celkem **${estimatedAssign
     await interaction.editReply({
       content: `Role: \`${role.name}\`\nOdhadované ovlivní **${estimatedCount}** uživatelů. Pokračovat?`,
       components: [confirmRow],
-      ephemeral: true,
     });
   }
 
@@ -579,7 +584,8 @@ Odhadovane ovlivni **${estimatedCount}** uživatelů, celkem **${estimatedAssign
 
     // Fallback: collect again if nothing fetched (cache cold or members left the guild).
     if (targets.size === 0) {
-      targets = await this.collectMembersWithRoles(interaction.guild, roleIdSet);
+      const { targets: refreshedTargets } = await this.collectMembersWithRoles(interaction.guild, roleIdSet);
+      targets = refreshedTargets;
     }
 
     let removedMembers = 0;
@@ -601,7 +607,7 @@ Odhadovane ovlivni **${estimatedCount}** uživatelů, celkem **${estimatedAssign
     const summaryParts = [`Hotovo. Odebrano u ${removedMembers} uzivatelu.`];
     if (failedMembers > 0) summaryParts.push(`Nepodarilo se odebrat u ${failedMembers} uzivatelu.`);
 
-    await interaction.followUp({ content: summaryParts.join(" "), ephemeral: true });
+    await interaction.followUp({ content: summaryParts.join(" ") });
   }
 
   async handleRoleCleanupSpecificConfirmation(interaction) {
@@ -633,7 +639,7 @@ Odhadovane ovlivni **${estimatedCount}** uživatelů, celkem **${estimatedAssign
       interaction.guild.roles.cache.get(roleId) || (await interaction.guild.roles.fetch(roleId).catch(() => null));
     if (!role || !role.editable) {
       this.pendingRoleCleanup.delete(commandId);
-      await interaction.followUp({ content: "Roli se nepodařilo odebrat (nenalezena nebo neupravitelná).", ephemeral: true });
+      await interaction.followUp({ content: "Roli se nepodařilo odebrat (nenalezena nebo neupravitelná)." });
       return;
     }
 
@@ -659,7 +665,7 @@ Odhadovane ovlivni **${estimatedCount}** uživatelů, celkem **${estimatedAssign
     const summaryParts = [`Hotovo. Odebráno u ${removedMembers} uživatelů.`];
     if (failedMembers > 0) summaryParts.push(`Nepodařilo se odebrat u ${failedMembers} uživatelů.`);
 
-    await interaction.followUp({ content: summaryParts.join(" "), ephemeral: true });
+    await interaction.followUp({ content: summaryParts.join(" ") });
   }
 
   async handleDenyButton(interaction) {
