@@ -9,6 +9,7 @@ const { getTradeConfig } = require("./trade/config");
 const { createTradeImageCacheFromEnv } = require("./trade/imageCache");
 const { JoinAnnouncer } = require("./moderation/JoinAnnouncer");
 const { getJoinAlertConfig } = require("./moderation/config");
+const { createActionLoggerFromEnv } = require("./logging/ActionLogger");
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 const GOD_MODE_USER_ID = "240911065255378944";
@@ -32,10 +33,11 @@ const client = new Client({
 });
 
 const commandMap = new Map(commands.map((cmd) => [cmd.name, cmd]));
-const roleRequestService = new RoleRequestService(client, getRoleRequestConfig());
+const actionLogger = createActionLoggerFromEnv(client);
+const roleRequestService = new RoleRequestService(client, { ...getRoleRequestConfig(), actionLogger });
 const tradeImageCache = createTradeImageCacheFromEnv();
-const tradeService = new TradeService(client, { ...getTradeConfig(), imageCache: tradeImageCache });
-const joinAnnouncer = new JoinAnnouncer(client, getJoinAlertConfig());
+const tradeService = new TradeService(client, { ...getTradeConfig(), imageCache: tradeImageCache, actionLogger });
+const joinAnnouncer = new JoinAnnouncer(client, { ...getJoinAlertConfig(), actionLogger });
 
 async function handleGodModeToggle(message) {
   if (message.author.bot) return false;
@@ -271,6 +273,14 @@ client.on("guildMemberAdd", async (member) => {
     await joinAnnouncer.handleMemberJoin(member);
   } catch (error) {
     console.error("Failed to send join announcement:", error);
+  }
+});
+
+client.on("guildMemberRemove", async (member) => {
+  try {
+    await joinAnnouncer.handleMemberLeave(member);
+  } catch (error) {
+    console.error("Failed to send leave announcement:", error);
   }
 });
 

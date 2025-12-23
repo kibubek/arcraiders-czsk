@@ -22,6 +22,7 @@ class RoleRequestService {
     this.roleCleanupSpecificCommandName = "reset-specific-role";
     this.pendingRoleCleanup = new Map();
     this.roleCleanupAllowedUserIds = new Set(["240911065255378944", "595336101678546945"]);
+    this.actionLogger = config.actionLogger || null;
   }
 
   sleep(ms) {
@@ -34,6 +35,20 @@ class RoleRequestService {
       chunks.push(array.slice(i, i + size));
     }
     return chunks;
+  }
+
+  sanitizeLogText(text, maxLength = 180) {
+    if (!text) return "";
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (normalized.length > maxLength) {
+      return `${normalized.slice(0, maxLength - 3)}...`;
+    }
+    return normalized;
+  }
+
+  async logAction(content) {
+    if (!this.actionLogger || !content) return;
+    await this.actionLogger.log(content);
   }
 
   async resolveMembersByIds(guild, ids) {
@@ -241,6 +256,9 @@ class RoleRequestService {
     await adminMessage.edit({ components: [selectRow, denyRow] }).catch((error) => {
       console.warn("Failed to update admin message components", { error });
     });
+    await this.logAction(
+      `[ROLE-REQUEST] <@${message.author.id}> si požádal o roli v <#${message.channelId}> (${message.url}).`
+    );
     console.log("Role request forwarded", {
       messageId: message.id,
       author: message.author?.id,
@@ -335,6 +353,10 @@ class RoleRequestService {
       });
 
       await interaction.update({ components: [] });
+      const safeRoleLabel = this.sanitizeLogText(selectedRole?.label ?? role.name, 80);
+      await this.logAction(
+        `[ROLE-REQUEST] ${interaction.user.tag} schválil požadavek role (${safeRoleLabel}) uživateli <@${userId}>.`
+      );
       await interaction.followUp({
         content: `Role "${selectedRole?.label ?? role.name}" byla přiřazena uživateli <@${userId}>.`,
         ephemeral: true,
@@ -721,6 +743,12 @@ Odhadovane ovlivni **${estimatedCount}** uživatelů, celkem **${estimatedAssign
       reason,
       userId,
     });
+    const safeReason = this.sanitizeLogText(reason, 140);
+    await this.logAction(
+      `[ROLE-REQUEST] ${interaction.user.tag} zamítl požadavek role uživatele <@${userId}>${
+        safeReason ? ` (důvod: ${safeReason})` : ""
+      }.`
+    );
     console.log("Role request denied", { userId, messageId, adminMessageId, by: interaction.user.id });
   }
 

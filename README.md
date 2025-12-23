@@ -29,6 +29,7 @@ Discord.js bot with slash commands:
    TRADE_DURATION_EXTENDED=120s                         # optional extended lifetime
    ROLE_REQUEST_CHANNEL=channel-for-role-requests       # optional
    ROLE_REQUEST_ADMIN_CHANNEL=admin-channel-for-roles   # optional
+   ACTION_LOG_CHANNEL_ID=channel-for-bot-action-logs    # optional
    JOIN_ALERT_CHANNEL_ID=mod-channel-for-join-alerts    # optional
    JOIN_ALERT_MIN_ACCOUNT_AGE_DAYS=7                    # optional, defaults to 7 days
    JOIN_ALERT_PING_ROLE_ID=role-id-to-ping              # optional, role mention in join alerts (when flagged)

@@ -7,10 +7,16 @@ class JoinAnnouncer {
     this.channelId = options.channelId;
     this.minAccountAgeDays = Number.isFinite(options.minAccountAgeDays) ? options.minAccountAgeDays : 0;
     this.pingRoleIds = Array.isArray(options.pingRoleIds) ? options.pingRoleIds.filter(Boolean) : [];
+    this.actionLogger = options.actionLogger || null;
   }
 
   isEnabled() {
     return Boolean(this.channelId);
+  }
+
+  async logAction(content) {
+    if (!this.actionLogger || !content) return;
+    await this.actionLogger.log(content);
   }
 
   getSlashCommandDefinitions() {
@@ -72,6 +78,32 @@ class JoinAnnouncer {
     };
   }
 
+  buildLeaveEmbed(member, leftAtTs) {
+    const createdAt = member.user?.createdTimestamp
+      ? new Date(member.user.createdTimestamp)
+      : new Date();
+    const createdTs = Math.floor(createdAt.getTime() / 1000);
+    const joinedTs = member.joinedTimestamp ? Math.floor(member.joinedTimestamp / 1000) : null;
+    const fields = [{ name: "Account created", value: `<t:${createdTs}:R> (<t:${createdTs}:F>)`, inline: false }];
+
+    if (joinedTs) {
+      fields.push({ name: "Na serveru od", value: `<t:${joinedTs}:R> (<t:${joinedTs}:F>)`, inline: false });
+    }
+
+    fields.push({ name: "Opustil", value: `<t:${leftAtTs}:F>`, inline: true });
+
+    return {
+      title: "ODCHOD",
+      description: `${member.user?.tag ?? member.user ?? member.id} opustil server.`,
+      color: accentColor,
+      fields,
+      thumbnail: {
+        url: member.user.displayAvatarURL({ size: 256, extension: "png", forceStatic: false }),
+      },
+      footer: { text: footerText },
+    };
+  }
+
   async handleMemberJoin(member) {
     if (!this.isEnabled()) return;
     const channel = await this.fetchChannel();
@@ -102,6 +134,28 @@ class JoinAnnouncer {
       .catch((error) => {
         console.warn("join-announcer: failed to send join alert", { error });
       });
+    await this.logAction(`[MEMBER] ${member.user?.tag ?? member.id} se připojil.`);
+  }
+
+  async handleMemberLeave(member) {
+    if (!this.isEnabled()) return;
+    const channel = await this.fetchChannel();
+    if (!channel) return;
+
+    const leftAtTs = Math.floor(Date.now() / 1000);
+    const embed = this.buildLeaveEmbed(member, leftAtTs);
+    const content = `${member.user?.tag ?? member.user ?? member.id} opustil server.`;
+
+    await channel
+      .send({
+        content,
+        embeds: [embed],
+        allowedMentions: { parse: [] },
+      })
+      .catch((error) => {
+        console.warn("join-announcer: failed to send leave alert", { error });
+      });
+    await this.logAction(`[MEMBER] ${member.user?.tag ?? member.id} opustil server.`);
   }
 
   async handleInteraction(interaction) {

@@ -32,6 +32,7 @@ class TradeService {
     this.offerMessages = new Map();
     this.autoTradingEnabled = false;
     this.imageCache = options.imageCache || null;
+    this.actionLogger = options.actionLogger || null;
   }
 
   formatDuration(ms) {
@@ -40,6 +41,25 @@ class TradeService {
     if (ms >= 60_000) return `${Math.round(ms / 60_000)}m`;
     if (ms >= 1000) return `${Math.round(ms / 1000)}s`;
     return `${ms}ms`;
+  }
+
+  sanitizeLogText(text, maxLength = 200) {
+    if (!text) return "";
+    const normalized = text.replace(/\s+/g, " ").trim();
+    if (normalized.length > maxLength) {
+      return `${normalized.slice(0, maxLength - 1)}...`;
+    }
+    return normalized;
+  }
+
+  async logAction(content, options = {}) {
+    if (!this.actionLogger || !content) return;
+    await this.actionLogger.log(content, options);
+  }
+
+  buildListingUrl(post) {
+    if (!post?.guildId || !post?.channelId || !post?.messageId) return null;
+    return `https://discord.com/channels/${post.guildId}/${post.channelId}/${post.messageId}`;
   }
 
   async init() {
@@ -176,11 +196,11 @@ class TradeService {
     const uploaded = interaction.fields.getUploadedFiles("trade-files", false);
     const attachments = uploaded
       ? Array.from(uploaded.values()).map((file) => ({
-          id: file.id,
-          url: file.url,
-          name: file.name,
-          contentType: file.contentType,
-        }))
+        id: file.id,
+        url: file.url,
+        name: file.name,
+        contentType: file.contentType,
+      }))
       : [];
     const cachedAttachments = await this.cacheImages(attachments, interaction.id);
 
@@ -232,6 +252,10 @@ class TradeService {
     await this.pinIfEligible(sentMessage, member);
 
     this.scheduleExpiration(sentMessage.id, expiresAt);
+    const listingUrl = this.buildListingUrl(post);
+    await this.logAction(
+      `[TRADE] <@${interaction.user.id}> vytvořil [inzerát](${listingUrl ?? "inzerát"}) v <#${tradeChannel.id}> přes /trade.`
+    );
 
     const expireText = this.formatDuration(lifetimeMs);
     await interaction.reply({
@@ -480,6 +504,10 @@ class TradeService {
     await sentMessage.edit({ components: [offerButtonRow] });
     await this.pinIfEligible(sentMessage, member);
     this.scheduleExpiration(sentMessage.id, expiresAt);
+    const listingUrl = this.buildListingUrl(post);
+    await this.logAction(
+      `[TRADE] <@${message.author.id}> vytvořil [inzerát](${listingUrl ?? "inzerát"}) v <#${tradeChannel.id}> pomocí Autotradingu.`
+    );
 
     console.log("autotrading: listing created", {
       id: message.id,
@@ -601,6 +629,10 @@ class TradeService {
       return;
     }
 
+    const listingUrl = this.buildListingUrl(post);
+    await this.logAction(
+      `[TRADE] <@${interaction.user.id}> smazal [inzerát](${listingUrl ?? "inzerát"}) přes tlačítko Smazat.`
+    );
     await this.expirePost(post.messageId);
     await interaction.reply({ content: "Inzerát byl smazán.", ephemeral: true });
   }
@@ -618,6 +650,10 @@ class TradeService {
       return;
     }
 
+    const listingUrl = this.buildListingUrl(post);
+    await this.logAction(
+      `[TRADE] <@${interaction.user.id}> označil [inzerát](${listingUrl ?? "inzerát"}) jako dokončený.`
+    );
     await this.expirePost(post.messageId);
     await interaction.reply({
       content: "Inzerát byl uzavřen jako dokončený. Díky za potvrzení obchodu!",
@@ -769,6 +805,9 @@ class TradeService {
       await this.sendOwnerAcceptDm({ ownerUser, embed, listingUrl });
     }
 
+    await this.logAction(
+      `[TRADE] <@${interaction.user.id}> klikl na "Přijmout" u [inzerátu](${listingUrl ?? "inzerát"}).`
+    );
     await interaction.reply({
       content: 'Autor inzerátu byl informován v DM. Po dokončení obchod uzavřete tlačítkem "Obchod proběhl".',
       ephemeral: true,
@@ -813,6 +852,10 @@ class TradeService {
     };
 
     const actionRow = this.buildOfferActions(post.id, owner.id, interaction.user.id, true);
+    const logOfferText = this.sanitizeLogText(offerText, 140);
+    await this.logAction(
+      `[TRADE] <@${interaction.user.id}> dal protinabídku${logOfferText ? ` "${logOfferText}"` : ""} na [inzerát](${listingUrl ?? "inzerát"}).`
+    );
     try {
       const dmMessage = await owner.send({ embeds: [embed], components: [actionRow] });
       this.recordOfferMessage(post.id, dmMessage);
@@ -880,6 +923,9 @@ class TradeService {
           .catch(() => null);
       }
       await disableComponents;
+      await this.logAction(
+        `[TRADE] <@${interaction.user.id}> přijal protinabídku od <@${otherUserId}> na [inzerát](${listingUrl}).`
+      );
       await interaction.reply({
         content:
           'Přijato a druhá strana byla informována. Po dokončení obchod uzavři tlačítkem "Obchod proběhl" v inzerátu.',
@@ -900,12 +946,18 @@ class TradeService {
         await otherUser.send({ embeds: [embed] }).catch(() => null);
       }
       await disableComponents;
+      await this.logAction(
+        `[TRADE] <@${interaction.user.id}> odmítl protinabídku od <@${otherUserId}> na [inzerát](${listingUrl}).`
+      );
       await interaction.reply({ content: "Nabídka odmítnuta.", ephemeral: true });
       return;
     }
 
     if (action === "silent") {
       await disableComponents;
+      await this.logAction(
+        `[TRADE] <@${interaction.user.id}> odmítl protinabídku potichu na [inzerát](${listingUrl}).`
+      );
       await interaction.reply({
         content: "Nabídka byla odmítnuta a druhá strana nedostala upozornění o odmítnutí.",
         ephemeral: true,
@@ -972,6 +1024,10 @@ class TradeService {
     };
 
     const actionRow = this.buildOfferActions(post.id, targetId, interaction.user.id, false);
+    const logBody = this.sanitizeLogText(body, 140);
+    await this.logAction(
+      `[TRADE] <@${interaction.user.id}> poslal novou protinabídku${logBody ? ` "${logBody}"` : ""} na [inzerát](${listingUrl ?? "inzerát"}).`
+    );
     try {
       const dmMessage = await targetUser.send({ embeds: [embed], components: [actionRow] });
       this.recordOfferMessage(post.id, dmMessage);
