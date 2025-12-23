@@ -549,14 +549,15 @@ class TradeService {
   scheduleExpiration(messageId, expiresAt) {
     const delay = expiresAt.getTime() - Date.now();
     if (delay <= 0) {
-      this.expirePost(messageId);
+      this.expirePost(messageId, { reason: "expired" });
       return;
     }
-    const timer = setTimeout(() => this.expirePost(messageId), delay);
+    const timer = setTimeout(() => this.expirePost(messageId, { reason: "expired" }), delay);
     this.expirationTimers.set(messageId, timer);
   }
 
-  async expirePost(messageId) {
+  async expirePost(messageId, options = {}) {
+    const reason = options.reason ?? "expired";
     const post = await TradePost.findOne({ where: { messageId } });
     if (!post) return;
 
@@ -571,6 +572,13 @@ class TradeService {
 
     await this.cleanupOfferMessages(post.id);
     await TradePost.destroy({ where: { id: post.id } });
+
+    if (reason === "expired") {
+      const listingUrl = this.buildListingUrl(post);
+      await this.logAction(
+        `[TRADE] [inzerát](${listingUrl ?? "inzerát"}) uživatele <@${post.userId}> vypršel a byl odstraněn.`
+      );
+    }
     const timer = this.expirationTimers.get(messageId);
     if (timer) {
       clearTimeout(timer);
@@ -584,7 +592,7 @@ class TradeService {
     const expired = await TradePost.findAll({ where: { expiresAt: { [Op.lte]: now } } });
 
     for (const post of expired) {
-      await this.expirePost(post.messageId);
+      await this.expirePost(post.messageId, { reason: "expired" });
     }
 
     for (const post of active) {
@@ -633,7 +641,7 @@ class TradeService {
     await this.logAction(
       `[TRADE] <@${interaction.user.id}> smazal [inzerát](${listingUrl ?? "inzerát"}) přes tlačítko Smazat.`
     );
-    await this.expirePost(post.messageId);
+    await this.expirePost(post.messageId, { reason: "manual-delete" });
     await interaction.reply({ content: "Inzerát byl smazán.", ephemeral: true });
   }
 
@@ -654,7 +662,7 @@ class TradeService {
     await this.logAction(
       `[TRADE] <@${interaction.user.id}> označil [inzerát](${listingUrl ?? "inzerát"}) jako dokončený.`
     );
-    await this.expirePost(post.messageId);
+    await this.expirePost(post.messageId, { reason: "manual-complete" });
     await interaction.reply({
       content: "Inzerát byl uzavřen jako dokončený. Díky za potvrzení obchodu!",
       ephemeral: true,
