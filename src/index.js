@@ -7,6 +7,8 @@ const { RoleRequestService } = require("./role-request/RoleRequestService");
 const { TradeService } = require("./trade/TradeService");
 const { getTradeConfig } = require("./trade/config");
 const { createTradeImageCacheFromEnv } = require("./trade/imageCache");
+const { JoinAnnouncer } = require("./moderation/JoinAnnouncer");
+const { getJoinAlertConfig } = require("./moderation/config");
 const token = process.env.DISCORD_TOKEN;
 const clientId = process.env.CLIENT_ID;
 const GOD_MODE_USER_ID = "240911065255378944";
@@ -33,6 +35,7 @@ const commandMap = new Map(commands.map((cmd) => [cmd.name, cmd]));
 const roleRequestService = new RoleRequestService(client, getRoleRequestConfig());
 const tradeImageCache = createTradeImageCacheFromEnv();
 const tradeService = new TradeService(client, { ...getTradeConfig(), imageCache: tradeImageCache });
+const joinAnnouncer = new JoinAnnouncer(client, getJoinAlertConfig());
 
 async function handleGodModeToggle(message) {
   if (message.author.bot) return false;
@@ -153,6 +156,7 @@ async function registerSlashCommands() {
     ...commands.map(toSlashDefinition),
     ...tradeService.getSlashCommandDefinitions(),
     ...roleRequestService.getSlashCommandDefinitions(),
+    ...joinAnnouncer.getSlashCommandDefinitions(),
   ];
   await rest.put(Routes.applicationCommands(clientId), {
     body: slashCommands,
@@ -188,6 +192,9 @@ client.once("ready", () => {
   }
   if (!roleRequestService.isEnabled()) {
     console.warn("Role request workflow disabled: set ROLE_REQUEST_CHANNEL and ROLE_REQUEST_ADMIN_CHANNEL in .env");
+  }
+  if (!joinAnnouncer.isEnabled()) {
+    console.warn("Join announcements disabled: set JOIN_ALERT_CHANNEL_ID in .env to enable them.");
   }
   (async () => {
     if (tradeImageCache?.checkConnection) {
@@ -232,6 +239,14 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
+  try {
+    const handledByJoinAlert = await joinAnnouncer.handleInteraction(interaction);
+    if (handledByJoinAlert) return;
+  } catch (error) {
+    console.error("Failed to handle join alert interaction:", error);
+    return;
+  }
+
   if (interaction.isChatInputCommand()) {
     const command = commandMap.get(interaction.commandName);
     if (!command) return;
@@ -249,6 +264,14 @@ client.on("interactionCreate", async (interaction) => {
     return;
   }
 
+});
+
+client.on("guildMemberAdd", async (member) => {
+  try {
+    await joinAnnouncer.handleMemberJoin(member);
+  } catch (error) {
+    console.error("Failed to send join announcement:", error);
+  }
 });
 
 (async () => {
