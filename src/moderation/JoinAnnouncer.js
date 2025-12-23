@@ -6,7 +6,7 @@ class JoinAnnouncer {
     this.client = client;
     this.channelId = options.channelId;
     this.minAccountAgeDays = Number.isFinite(options.minAccountAgeDays) ? options.minAccountAgeDays : 0;
-    this.pingRoleId = options.pingRoleId || null;
+    this.pingRoleIds = Array.isArray(options.pingRoleIds) ? options.pingRoleIds.filter(Boolean) : [];
   }
 
   isEnabled() {
@@ -61,8 +61,8 @@ class JoinAnnouncer {
     }
 
     return {
-      title: "New member joined",
-      description: `${member.user} joined the server.`,
+      title: "NOVÝ ČLEN",
+      description: `${member.user} se připojil.`,
       color: accentColor,
       fields,
       thumbnail: {
@@ -83,16 +83,21 @@ class JoinAnnouncer {
     const isNew = this.minAccountAgeDays > 0 ? ageDays < this.minAccountAgeDays : false;
 
     const embed = this.buildEmbed(member, { createdAt, ageMs, isNew });
-    const parts = [];
-    if (this.pingRoleId) parts.push(`<@&${this.pingRoleId}>`);
-    if (isNew) parts.push("\nNovej SUS ACC se připojil.");
-    const content = parts.join(" ").trim() || null;
+    const parts = [`Připojil se ${member}.\n`];
+    const shouldPing = isNew && this.pingRoleIds.length > 0;
+    if (shouldPing) parts.push(...this.pingRoleIds.map((id) => `<@&${id}>`));
+    if (isNew) parts.push("Novej SUS ACC se pripojil.");
+    const content = parts.join(" ").trim();
 
     await channel
       .send({
         content,
         embeds: [embed],
-        allowedMentions: this.pingRoleId ? { roles: [this.pingRoleId] } : { parse: [] },
+        allowedMentions: {
+          roles: shouldPing ? this.pingRoleIds : [],
+          users: [member.id],
+          parse: [],
+        },
       })
       .catch((error) => {
         console.warn("join-announcer: failed to send join alert", { error });

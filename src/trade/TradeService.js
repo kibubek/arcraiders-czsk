@@ -96,6 +96,11 @@ class TradeService {
       return true;
     }
 
+    if (interaction.isButton() && interaction.customId.startsWith("tr:complete:")) {
+      await this.handleCompleteTrade(interaction);
+      return true;
+    }
+
     if (interaction.isButton() && interaction.customId.startsWith("tr:edit:")) {
       await this.handleEditListing(interaction);
       return true;
@@ -367,6 +372,7 @@ class TradeService {
 
     row.addComponents(
       new ButtonBuilder().setCustomId(`tr:edit:${postId}`).setLabel("Upravit inzerát").setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder().setCustomId(`tr:complete:${postId}:${ownerId}`).setLabel("Obchod proběhl").setStyle(ButtonStyle.Success),
       new ButtonBuilder()
         .setCustomId(`tr:del:${postId}:${ownerId}`)
         .setLabel("Smazat inzerát")
@@ -599,6 +605,26 @@ class TradeService {
     await interaction.reply({ content: "Inzerát byl smazán.", ephemeral: true });
   }
 
+  async handleCompleteTrade(interaction) {
+    const [, , postId, ownerId] = interaction.customId.split(":");
+    if (interaction.user.id !== ownerId) {
+      await interaction.reply({ content: "Toto tlačítko je jen pro autora inzerátu.", ephemeral: true });
+      return;
+    }
+
+    const post = await TradePost.findOne({ where: { id: postId } });
+    if (!post) {
+      await interaction.reply({ content: "Inzerát už není aktivní.", ephemeral: true });
+      return;
+    }
+
+    await this.expirePost(post.messageId);
+    await interaction.reply({
+      content: "Inzerát byl uzavřen jako dokončený. Díky za potvrzení obchodu!",
+      ephemeral: true,
+    });
+  }
+
   async pinIfEligible(message, member) {
     if (!this.extendedRoleId || !member) return;
     if (!member.roles.cache.has(this.extendedRoleId)) return;
@@ -738,20 +764,15 @@ class TradeService {
       footer: { text: footerText },
     };
 
-    const channel = await this.client.channels.fetch(post.channelId).catch(() => null);
-    const message = channel?.isTextBased() ? await channel.messages.fetch(post.messageId).catch(() => null) : null;
-
     const ownerUser = await this.client.users.fetch(ownerId).catch(() => null);
     if (ownerUser) {
-      await ownerUser.send({ embeds: [embed] }).catch(() => null);
+      await this.sendOwnerAcceptDm({ ownerUser, embed, listingUrl });
     }
 
-    if (message) {
-      await message.edit({ embeds: [embed], components: [] }).catch(() => null);
-    }
-
-    await TradePost.destroy({ where: { id: post.id } });
-    await interaction.reply({ content: "Autor inzerátu byl informován v DM.", ephemeral: true });
+    await interaction.reply({
+      content: 'Autor inzerátu byl informován v DM. Po dokončení obchod uzavřete tlačítkem "Obchod proběhl".',
+      ephemeral: true,
+    });
   }
 
   async handleOfferModalSubmit(interaction) {
@@ -859,7 +880,11 @@ class TradeService {
           .catch(() => null);
       }
       await disableComponents;
-      await interaction.reply({ content: "Přijato a druhá strana byla informována.", ephemeral: true });
+      await interaction.reply({
+        content:
+          'Přijato a druhá strana byla informována. Po dokončení obchod uzavři tlačítkem "Obchod proběhl" v inzerátu.',
+        ephemeral: true,
+      });
       return;
     }
 
@@ -953,6 +978,19 @@ class TradeService {
       await interaction.reply({ content: "Protinabídka byla odeslána.", ephemeral: true });
     } catch (error) {
       await interaction.reply({ content: "DM se nepodařilo odeslat.", ephemeral: true });
+    }
+  }
+
+  async sendOwnerAcceptDm({ ownerUser, embed, listingUrl }) {
+    if (!ownerUser) return;
+
+    await ownerUser.send({ embeds: [embed] }).catch(() => null);
+    const instructions =
+      'Pokud trade doběhl, klikni na tlačítko "Obchod proběhl" přímo v inzerátu, aby se mohl uzavřít.';
+    if (listingUrl) {
+      await ownerUser.send({ content: `${instructions}\n${listingUrl}` }).catch(() => null);
+    } else {
+      await ownerUser.send({ content: instructions }).catch(() => null);
     }
   }
 
